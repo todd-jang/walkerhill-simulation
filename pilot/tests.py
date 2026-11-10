@@ -13,6 +13,16 @@ from .ground_truth import (
     flat_policy,
     reference_ranking,
 )
+from .icws_reference import (
+    BATCH_SPEC,
+    PAPER_PRIORS,
+    Archetype,
+    Observable,
+    archetypes,
+    assign,
+    dynamic_price,
+    reference_price,
+)
 from .metrics import cost_to_stability, direction_accuracy, flip_count, spearman
 from .pilot_run import (
     DEFAULT_POPULATION,
@@ -89,6 +99,48 @@ class MetricTests(unittest.TestCase):
     def test_flip_count_counts_changes(self) -> None:
         history = (("a", "b"), ("a", "b"), ("b", "a"), ("a", "b"))
         self.assertEqual(flip_count(history), 2)
+
+
+class IcwsReferenceTests(unittest.TestCase):
+    """R5 confirmed parameters (v0.7 section 5.13). Paper claims only."""
+
+    SHORT_LEAD_SOLO = Observable(lead_days=2, nights=1, adults=1)
+
+    def test_posteriors_sum_to_one(self) -> None:
+        posterior = archetypes(self.SHORT_LEAD_SOLO, PAPER_PRIORS)
+        self.assertAlmostEqual(sum(posterior.values()), 1.0)
+
+    def test_short_lead_short_stay_solo_leans_business(self) -> None:
+        posterior = archetypes(self.SHORT_LEAD_SOLO, PAPER_PRIORS)
+        best = max(posterior, key=posterior.get)
+        self.assertIs(best, Archetype.BUSINESS)
+
+    def test_long_lead_family_trip_pushes_business_last(self) -> None:
+        family = Observable(lead_days=45, nights=9, adults=2, children=2)
+        posterior = archetypes(family, PAPER_PRIORS)
+        self.assertLess(posterior[Archetype.BUSINESS], posterior[Archetype.LUXURY])
+        self.assertLess(posterior[Archetype.BUSINESS], posterior[Archetype.LEISURE])
+
+    def test_assignment_stays_in_the_domain(self) -> None:
+        for _ in range(50):
+            self.assertIn(assign(self.SHORT_LEAD_SOLO, PAPER_PRIORS, random.Random(3)), Archetype)
+
+    def test_dynamic_price_rises_with_occupancy_and_floors(self) -> None:
+        prices = [dynamic_price(200.0, occupancy / 100) for occupancy in range(0, 101, 5)]
+        self.assertEqual(prices, sorted(prices))
+        # Paper values: at empty rooms the multiplier is max(0.65, 1 + 0.4*(0-0.5)) = 0.8.
+        self.assertEqual(prices[0], 160.0)
+        self.assertGreaterEqual(prices[0], 200.0 * 0.65)
+
+    def test_reference_price_interpolates(self) -> None:
+        self.assertAlmostEqual(reference_price(100.0, 200.0, alpha=0.25), 175.0)
+        with self.assertRaises(ValueError):
+            reference_price(100.0, 200.0, alpha=1.5)
+
+    def test_batch_spec_covers_the_fallback_rules(self) -> None:
+        self.assertIs(BATCH_SPEC["one_call_per_simulation_day"], True)
+        self.assertEqual(BATCH_SPEC["invalid_json_fallback"], "no_booking")
+        self.assertIs(BATCH_SPEC["track_invalid_response_rate"], True)
 
 
 class PilotTests(unittest.TestCase):
